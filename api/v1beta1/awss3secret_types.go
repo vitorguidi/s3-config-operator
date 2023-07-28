@@ -29,7 +29,8 @@ type AwsS3SecretSpec struct {
 	// Important: Run "make" to regenerate code after modifying this file
 
 	// Foo is an example field of AwsS3Secret. Edit awss3secret_types.go to remove/update
-	Foo string `json:"foo,omitempty"`
+	S3url      string `json:"s3url,omitempty"`
+	SecretName string `json:"secretName,omitempty"`
 }
 
 // AwsS3SecretStatus defines the observed state of AwsS3Secret

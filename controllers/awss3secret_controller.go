@@ -18,6 +18,9 @@ package controllers
 
 import (
 	"context"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -51,6 +54,27 @@ func (r *AwsS3SecretReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	log := log.FromContext(ctx)
 	log.Info("Entered reconcile loop.")
 	// TODO(user): your logic here
+
+	cfg, err := config.LoadDefaultConfig(context.TODO())
+	if err != nil {
+		log.Error(err, "Failed to fetch aws config file")
+	}
+
+	// Create an Amazon S3 service client
+	client := s3.NewFromConfig(cfg)
+
+	// Get the first page of results for ListObjectsV2 for a bucket
+	output, err := client.ListObjectsV2(context.TODO(), &s3.ListObjectsV2Input{
+		Bucket: aws.String("my-bucket"),
+	})
+	if err != nil {
+		log.Error(err, "")
+	}
+
+	log.Info("first page results:")
+	for _, object := range output.Contents {
+		log.Info("key=%s size=%d", aws.ToString(object.Key), object.Size)
+	}
 
 	return ctrl.Result{}, nil
 }
