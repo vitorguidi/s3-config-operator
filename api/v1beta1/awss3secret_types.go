@@ -29,7 +29,8 @@ type AwsS3SecretSpec struct {
 	// Important: Run "make" to regenerate code after modifying this file
 
 	// Foo is an example field of AwsS3Secret. Edit awss3secret_types.go to remove/update
-	S3url      string `json:"s3url,omitempty"`
+	S3bucket   string `json:"s3url,omitempty"`
+	S3file     string `json:"s3url,omitempty"`
 	SecretName string `json:"secretName,omitempty"`
 }
 
@@ -49,8 +50,9 @@ type AwsS3Secret struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   AwsS3SecretSpec   `json:"spec,omitempty"`
-	Status AwsS3SecretStatus `json:"status,omitempty"`
+	Spec        AwsS3SecretSpec   `json:"spec,omitempty"`
+	Status      AwsS3SecretStatus `json:"status,omitempty"`
+	Annotations map[string]string `json:"annotations,omitempty"`
 }
 
 //+kubebuilder:object:root=true
