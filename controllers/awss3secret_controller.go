@@ -22,7 +22,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"io/ioutil"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -40,7 +39,8 @@ import (
 	awsv1beta1 "example.com/api/v1beta1"
 )
 
-const s3SHA256HashAnnotation string = "example.com/api/v1beta1/s3filesha256hash"
+// should match ([A-Za-z0-9_.][-A-Za-z0-9_.]*)?[A-Za-z0-9]
+const s3LastModifiedTimestampAnnotation string = "s3-last-modified-timestamp"
 
 // AwsS3SecretReconciler reconciles a AwsS3Secret object
 type AwsS3SecretReconciler struct {
@@ -79,16 +79,19 @@ func (r *AwsS3SecretReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
-	objectSHA256Hash, err := r.getS3ObjectSHA256Hash(ctx, awsS3Secret)
+	objectLastModified, err := r.getS3ObjectLastModifiedTimestamp(ctx, awsS3Secret)
 	if err != nil {
 		//is this the proper way to handle not being able to query s3?
 		return ctrl.Result{}, err
 	}
 
-	oldHash, oldHashExists := awsS3Secret.Annotations[s3SHA256HashAnnotation]
+	lastModified, isLastModifiedAnnotationPresent := awsS3Secret.Annotations[s3LastModifiedTimestampAnnotation]
 
-	if !oldHashExists || objectSHA256Hash != oldHash {
-		awsS3Secret.Annotations[s3SHA256HashAnnotation] = objectSHA256Hash
+	if !isLastModifiedAnnotationPresent || objectLastModified != lastModified {
+		if awsS3Secret.Annotations == nil {
+			awsS3Secret.Annotations = make(map[string]string)
+		}
+		awsS3Secret.Annotations[s3LastModifiedTimestampAnnotation] = objectLastModified
 		err = r.Client.Update(ctx, awsS3Secret)
 		if err != nil {
 			log.Error(err, fmt.Sprintf("Could not update AwsS3Secret %s", req.NamespacedName))
@@ -116,7 +119,7 @@ func (r *AwsS3SecretReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	if err != nil && errors.IsNotFound(err) {
 		log.Info(fmt.Sprintf("ConfigMap not found: %s", *desiredConfigMapNamespacedName))
 		configMap := r.buildConfigMapFromS3Data(req.Namespace, awsS3Secret.Spec.SecretName,
-			objectContent, objectSHA256Hash)
+			objectContent, objectLastModified)
 		err = r.Client.Create(ctx, configMap)
 		if err != nil {
 			log.Error(err, "Could not create configmap")
@@ -127,11 +130,11 @@ func (r *AwsS3SecretReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	//if the configmap was created, it necessarily has a hash
-	configMapS3FileHash, _ := configMap.Annotations[s3SHA256HashAnnotation]
-	if configMapS3FileHash != objectSHA256Hash {
+	configMapS3FileHash, _ := configMap.Annotations[s3LastModifiedTimestampAnnotation]
+	if configMapS3FileHash != lastModified {
 		log.Info("Attempting to update configmap data")
 		configMap := r.buildConfigMapFromS3Data(req.Namespace, awsS3Secret.Spec.SecretName,
-			objectContent, objectSHA256Hash)
+			objectContent, lastModified)
 		err := r.Client.Update(ctx, configMap)
 		if err != nil {
 			log.Error(err, "Could not update configmap with the new s3 data")
@@ -145,13 +148,13 @@ func (r *AwsS3SecretReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	return ctrl.Result{}, nil
 }
 
-func (r *AwsS3SecretReconciler) buildConfigMapFromS3Data(namespace string, configMapName string, data string, sha256hash string) *corev1.ConfigMap {
+func (r *AwsS3SecretReconciler) buildConfigMapFromS3Data(namespace string, configMapName string, data string, lastModifiedTimestamp string) *corev1.ConfigMap {
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      configMapName,
 			Namespace: namespace,
 			Annotations: map[string]string{
-				s3SHA256HashAnnotation: sha256hash,
+				s3LastModifiedTimestampAnnotation: lastModifiedTimestamp,
 			},
 		},
 		Data: map[string]string{
@@ -175,8 +178,8 @@ func (r *AwsS3SecretReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			}
 			for _, s3secret := range s3secrets.Items {
 				go func(s awsv1beta1.AwsS3Secret) {
-					sha256hash := s3secret.Annotations[s3SHA256HashAnnotation]
-					s3hash, err := r.getS3ObjectSHA256Hash(context.TODO(), &s3secret)
+					lastModifiedTimestamp := s3secret.Annotations[s3LastModifiedTimestampAnnotation]
+					s3lastModifiedTimestamp, err := r.getS3ObjectLastModifiedTimestamp(context.TODO(), &s3secret)
 					if err != nil {
 						logger.Error(err,
 							fmt.Sprintf(
@@ -185,7 +188,8 @@ func (r *AwsS3SecretReconciler) SetupWithManager(mgr ctrl.Manager) error {
 								s3secret.GetNamespace()))
 						return
 					}
-					if sha256hash != s3hash {
+					if lastModifiedTimestamp != s3lastModifiedTimestamp {
+						logger.Info(fmt.Sprintf("Had a change event for object %s : ", s3secret))
 						s3ChangeEvents <- event.GenericEvent{
 							Object: &s3secret,
 						}
@@ -213,8 +217,8 @@ func (r *AwsS3SecretReconciler) getS3ObjectContent(ctx context.Context, awsS3Sec
 	client := s3.NewFromConfig(awsCfg)
 
 	input := &s3.GetObjectInput{
-		Bucket: aws.String(awsS3Secret.Spec.S3bucket),
-		Key:    aws.String(awsS3Secret.Spec.S3file),
+		Bucket: aws.String(awsS3Secret.Spec.S3Bucket),
+		Key:    aws.String(awsS3Secret.Spec.S3File),
 	}
 
 	s3FileContents, err := client.GetObject(context.TODO(), input)
@@ -237,7 +241,7 @@ func (r *AwsS3SecretReconciler) getS3ObjectContent(ctx context.Context, awsS3Sec
 	return objectContent, nil
 }
 
-func (r *AwsS3SecretReconciler) getS3ObjectSHA256Hash(ctx context.Context, awsS3Secret *awsv1beta1.AwsS3Secret) (string, error) {
+func (r *AwsS3SecretReconciler) getS3ObjectLastModifiedTimestamp(ctx context.Context, awsS3Secret *awsv1beta1.AwsS3Secret) (string, error) {
 	log := log.FromContext(ctx)
 	awsCfg, err := config.LoadDefaultConfig(context.TODO())
 	if err != nil {
@@ -248,21 +252,21 @@ func (r *AwsS3SecretReconciler) getS3ObjectSHA256Hash(ctx context.Context, awsS3
 	// Create an Amazon S3 service client
 	client := s3.NewFromConfig(awsCfg)
 
-	params := &s3.GetObjectAttributesInput{
-		Bucket:           aws.String(awsS3Secret.Spec.S3bucket),
-		Key:              aws.String(awsS3Secret.Spec.S3file),
-		ObjectAttributes: []s3types.ObjectAttributes{s3types.ObjectAttributesChecksum},
+	params := &s3.HeadObjectInput{
+		Bucket: aws.String(awsS3Secret.Spec.S3Bucket),
+		Key:    aws.String(awsS3Secret.Spec.S3File),
 	}
 
-	s3FileAttributes, err := client.GetObjectAttributes(context.TODO(), params)
+	s3FileAttributes, err := client.HeadObject(context.TODO(), params)
 
 	if err != nil {
-		log.Error(err, "Unable to fetch s3 object checksum")
+		log.Error(err, fmt.Sprintf("Unable to fetch s3 object checksum %s %s",
+			awsS3Secret.Spec.S3Bucket, awsS3Secret.Spec.S3File))
 		return "", err
 	}
 
-	sha256checksum := s3FileAttributes.Checksum.ChecksumSHA256
+	lastModifiedTimestamp := s3FileAttributes.LastModified
 
-	fmt.Println("S3 File SHA256 checksum:", sha256checksum)
-	return *sha256checksum, nil
+	fmt.Println("S3 File Last Modified:", lastModifiedTimestamp)
+	return lastModifiedTimestamp.String(), nil
 }
